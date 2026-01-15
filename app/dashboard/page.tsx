@@ -26,38 +26,38 @@ interface Cluster {
   posts: Post[];
 }
 
-function calculateViralityScore(upvotes: number, comments: number): number {
-  const total = upvotes + comments * 2;
+function calculateViralityScore(points: number, comments: number): number {
+  const total = points + comments * 2;
   if (total > 10000) return Math.min(95, 70 + Math.log10(total) * 5);
   if (total > 1000) return Math.min(70, 50 + Math.log10(total) * 5);
   if (total > 100) return Math.min(50, 30 + Math.log10(total) * 5);
   return Math.min(30, 10 + Math.log10(total + 1) * 5);
 }
 
-async function fetchRedditFromBrowser(query: string): Promise<Post[]> {
+async function fetchHackerNews(query: string): Promise<Post[]> {
   const posts: Post[] = [];
   try {
-    const url = 'https://www.reddit.com/search.json?q=' + encodeURIComponent(query) + '&sort=relevance&t=month&limit=25';
-    const response = await fetch(url);
+    const response = await fetch(
+      'https://hn.algolia.com/api/v1/search?query=' + encodeURIComponent(query) + '&tags=story&hitsPerPage=25'
+    );
     if (!response.ok) return posts;
     const data = await response.json();
-    const children = data?.data?.children || [];
-    for (const child of children) {
-      const post = child.data;
-      if ((post.ups || 0) < 10) continue;
+    const hits = data.hits || [];
+    for (const hit of hits) {
+      if ((hit.points || 0) < 10) continue;
       posts.push({
-        platform: 'reddit',
-        url: 'https://reddit.com' + post.permalink,
-        author: post.author,
-        title: post.title,
-        text: post.selftext?.slice(0, 500) || '',
-        created_at: new Date(post.created_utc * 1000).toISOString(),
-        metrics: { upvotes: post.ups, comments: post.num_comments },
-        virality_score: calculateViralityScore(post.ups || 0, post.num_comments || 0),
+        platform: 'hackernews',
+        url: hit.url || 'https://news.ycombinator.com/item?id=' + hit.objectID,
+        author: hit.author,
+        title: hit.title,
+        text: '',
+        created_at: hit.created_at,
+        metrics: { upvotes: hit.points || 0, comments: hit.num_comments || 0 },
+        virality_score: calculateViralityScore(hit.points || 0, hit.num_comments || 0),
       });
     }
   } catch (error) {
-    console.error('Reddit error:', error);
+    console.error('HN fetch error:', error);
   }
   return posts;
 }
@@ -95,12 +95,12 @@ export default function DashboardPage() {
       if (user && linkedinUrl) {
         await supabase.from('profiles').upsert({ id: user.id, email: user.email, linkedin_url: linkedinUrl });
       }
-      const queries = [theme, theme + ' 2024', theme + ' tips'];
       let allPosts: Post[] = [];
+      const queries = [theme, theme + ' startup', theme + ' tools'];
       for (const query of queries) {
-        const posts = await fetchRedditFromBrowser(query);
+        const posts = await fetchHackerNews(query);
         allPosts = [...allPosts, ...posts];
-        if (allPosts.length >= 15) break;
+        if (allPosts.length >= 20) break;
       }
       const seenUrls = new Set<string>();
       allPosts = allPosts.filter(post => {
@@ -115,11 +115,11 @@ export default function DashboardPage() {
       } else {
         const topPosts = allPosts.slice(0, 5);
         const avgVirality = Math.round(topPosts.reduce((a, p) => a + p.virality_score, 0) / topPosts.length);
-        const newClusters: Cluster[] = [{ name: 'Top ' + theme + ' Content', avg_virality: avgVirality, top_platform: 'reddit', active_platforms: ['reddit'], posts: topPosts }];
+        const newClusters: Cluster[] = [{ name: 'Top ' + theme + ' Content', avg_virality: avgVirality, top_platform: 'hackernews', active_platforms: ['hackernews'], posts: topPosts }];
         if (allPosts.length > 5) {
           const morePosts = allPosts.slice(5, 10);
           const moreAvg = Math.round(morePosts.reduce((a, p) => a + p.virality_score, 0) / morePosts.length);
-          newClusters.push({ name: 'More Discussions', avg_virality: moreAvg, top_platform: 'reddit', active_platforms: ['reddit'], posts: morePosts });
+          newClusters.push({ name: 'More Discussions', avg_virality: moreAvg, top_platform: 'hackernews', active_platforms: ['hackernews'], posts: morePosts });
         }
         setClusters(newClusters);
         setExpandedClusters(new Set([0]));
@@ -168,12 +168,12 @@ export default function DashboardPage() {
       <main className="max-w-4xl mx-auto px-4 py-12">
         <div className="mb-12">
           <h2 className="text-3xl font-bold text-white mb-2">Discover Viral Content</h2>
-          <p className="text-gray-400">Enter a theme to find trending posts across platforms</p>
+          <p className="text-gray-400">Enter a theme to find trending posts from Hacker News</p>
         </div>
         <div className="space-y-4 mb-8">
           <div>
             <label className="block text-sm text-gray-300 mb-2">Theme / Topic *</label>
-            <input type="text" value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="e.g., AI tools for PMs, startup mistakes..." className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500" onKeyDown={(e) => e.key === 'Enter' && handleDiscover()} />
+            <input type="text" value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="e.g., AI tools, startup mistakes, indie hacking..." className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500" onKeyDown={(e) => e.key === 'Enter' && handleDiscover()} />
           </div>
           <div>
             <label className="block text-sm text-gray-300 mb-2">Your LinkedIn URL (optional)</label>
@@ -201,12 +201,11 @@ export default function DashboardPage() {
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex-1">
                             <div className="flex items-center gap-2 mb-2">
-                              <span className="px-2 py-1 bg-orange-500/20 text-orange-400 text-xs font-medium rounded">REDDIT</span>
+                              <span className="px-2 py-1 bg-orange-500/20 text-orange-400 text-xs font-medium rounded">HN</span>
                               <span className="text-lg font-semibold text-white">{post.title}</span>
                             </div>
-                            {post.text && <p className="text-gray-400 text-sm mb-2 line-clamp-2">{post.text}</p>}
                             <div className="flex items-center gap-4 text-sm text-gray-500">
-                              <span>Upvotes: {post.metrics.upvotes}</span>
+                              <span>Points: {post.metrics.upvotes}</span>
                               <span>Comments: {post.metrics.comments}</span>
                               <span>by {post.author}</span>
                             </div>
