@@ -1,12 +1,38 @@
 'use client';
 
 import { createClient } from '@/lib/supabase/client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const supabase = createClient();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    // Check if there's a code in the URL (OAuth callback)
+    const code = searchParams.get('code');
+    if (code) {
+      setLoading(true);
+      supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
+        if (error) {
+          setError(error.message);
+          setLoading(false);
+        } else {
+          router.push('/dashboard');
+        }
+      });
+    }
+
+    // Check if user is already logged in
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        router.push('/dashboard');
+      }
+    });
+  }, [searchParams, supabase.auth, router]);
 
   const handleGoogleLogin = async () => {
     setLoading(true);
@@ -15,7 +41,7 @@ export default function LoginPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/dashboard`,
+        redirectTo: `${window.location.origin}/login`,
       },
     });
 
@@ -27,10 +53,8 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center px-4">
-      {/* Background gradient */}
       <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-cyan-900/20" />
       
-      {/* Grid pattern */}
       <div 
         className="absolute inset-0 opacity-20"
         style={{
@@ -41,7 +65,6 @@ export default function LoginPage() {
       />
 
       <div className="relative z-10 w-full max-w-md">
-        {/* Logo */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold bg-gradient-to-r from-cyan-400 via-purple-500 to-pink-500 bg-clip-text text-transparent">
             SignalForge
@@ -49,7 +72,6 @@ export default function LoginPage() {
           <p className="text-gray-400 mt-2">Discover what to post next</p>
         </div>
 
-        {/* Login card */}
         <div className="bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-2xl p-8">
           <h2 className="text-xl font-semibold text-white mb-6 text-center">
             Sign in to continue
@@ -96,7 +118,6 @@ export default function LoginPage() {
           </p>
         </div>
 
-        {/* Back to home */}
         <div className="text-center mt-6">
           <a 
             href="/" 
