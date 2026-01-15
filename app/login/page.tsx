@@ -11,31 +11,33 @@ export default function LoginPage() {
   const router = useRouter();
 
   useEffect(() => {
-    // Handle auth state change (for implicit flow)
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        router.push('/dashboard');
+      }
+    };
+    checkUser();
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (session) {
         router.push('/dashboard');
       }
     });
 
-    // Check if already logged in
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) {
-        router.push('/dashboard');
-      }
-    });
-
     return () => subscription.unsubscribe();
-  }, [supabase.auth, router]);
+  }, [supabase, router]);
 
   const handleGoogleLogin = async () => {
     setLoading(true);
     setError(null);
 
+    const redirectUrl = `${window.location.origin}/api/auth/callback`;
+    
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/dashboard`,
+        redirectTo: redirectUrl,
       },
     });
 
