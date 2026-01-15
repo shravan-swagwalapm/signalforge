@@ -53,7 +53,7 @@ async function fetchHackerNews(query: string): Promise<Post[]> {
         text: '',
         created_at: hit.created_at,
         metrics: { upvotes: hit.points || 0, comments: hit.num_comments || 0 },
-        virality_score: calculateViralityScore(hit.points || 0, hit.num_comments || 0),
+        virality_score: Math.round(calculateViralityScore(hit.points || 0, hit.num_comments || 0)),
       });
     }
   } catch (error) {
