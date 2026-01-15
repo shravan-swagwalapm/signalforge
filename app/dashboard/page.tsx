@@ -39,13 +39,9 @@ async function fetchRedditFromBrowser(query: string): Promise<Post[]> {
   
   try {
     const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&t=month&limit=25`;
-    
     const response = await fetch(url);
     
-    if (!response.ok) {
-      console.error('Reddit fetch failed:', response.status);
-      return posts;
-    }
+    if (!response.ok) return posts;
 
     const data = await response.json();
     const children = data?.data?.children || [];
@@ -53,8 +49,6 @@ async function fetchRedditFromBrowser(query: string): Promise<Post[]> {
     for (const child of children) {
       const post = child.data;
       if ((post.ups || 0) < 10) continue;
-
-      const virality = calculateViralityScore(post.ups || 0, post.num_comments || 0);
 
       posts.push({
         platform: 'reddit',
@@ -67,7 +61,7 @@ async function fetchRedditFromBrowser(query: string): Promise<Post[]> {
           upvotes: post.ups,
           comments: post.num_comments,
         },
-        virality_score: virality,
+        virality_score: calculateViralityScore(post.ups || 0, post.num_comments || 0),
       });
     }
   } catch (error) {
@@ -95,7 +89,6 @@ export default function DashboardPage() {
         router.push('/login');
       } else {
         setUser(user);
-        // Load saved LinkedIn URL
         supabase
           .from('profiles')
           .select('linkedin_url')
@@ -118,15 +111,13 @@ export default function DashboardPage() {
     setClusters([]);
 
     try {
-      // Save LinkedIn URL if provided
       if (user && linkedinUrl) {
         await supabase
           .from('profiles')
           .upsert({ id: user.id, email: user.email, linkedin_url: linkedinUrl });
       }
 
-      // Fetch Reddit directly from browser
-      const queries = [theme, `${theme} 2024`, `${theme} tips`];
+      const queries = [theme, theme + ' 2024', theme + ' tips'];
       let allPosts: Post[] = [];
 
       for (const query of queries) {
@@ -135,7 +126,6 @@ export default function DashboardPage() {
         if (allPosts.length >= 15) break;
       }
 
-      // Remove duplicates
       const seenUrls = new Set<string>();
       allPosts = allPosts.filter(post => {
         if (seenUrls.has(post.url)) return false;
@@ -143,13 +133,10 @@ export default function DashboardPage() {
         return true;
       });
 
-      // Sort by virality
       allPosts.sort((a, b) => b.virality_score - a.virality_score);
 
       if (allPosts.length === 0) {
         setError('Unable to find content for this theme. Try a different topic.');
-        
-        // Log failed attempt
         if (user) {
           await supabase.from('run_attempts').insert({
             user_id: user.id,
@@ -158,36 +145,32 @@ export default function DashboardPage() {
           });
         }
       } else {
-        // Create clusters
         const topPosts = allPosts.slice(0, 5);
-        const recentPosts = [...allPosts].sort((a, b) => 
-          new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
-        ).slice(0, 5);
+        const avgVirality = Math.round(topPosts.reduce((a, p) => a + p.virality_score, 0) / topPosts.length);
 
-        const newClusters: Cluster[] = [
-          {
-            name: `Top ${theme} Content`,
-            avg_virality: Math.round(topPosts.reduce((a, p) => a + p.virality_score, 0) / topPosts.length),
-            top_platform: 'reddit',
-            active_platforms: ['reddit'],
-            posts: topPosts,
-          },
-        ];
+        const newClusters: Cluster[] = [{
+          name: 'Top ' + theme + ' Content',
+          avg_virality: avgVirality,
+          top_platform: 'reddit',
+          active_platforms: ['reddit'],
+          posts: topPosts,
+        }];
 
         if (allPosts.length > 5) {
+          const morePosts = allPosts.slice(5, 10);
+          const moreAvg = Math.round(morePosts.reduce((a, p) => a + p.virality_score, 0) / morePosts.length);
           newClusters.push({
-            name: 'Recent Discussions',
-            avg_virality: Math.round(recentPosts.reduce((a, p) => a + p.virality_score, 0) / recentPosts.length),
+            name: 'More Discussions',
+            avg_virality: moreAvg,
             top_platform: 'reddit',
             active_platforms: ['reddit'],
-            posts: recentPosts,
+            posts: morePosts,
           });
         }
 
         setClusters(newClusters);
         setExpandedClusters(new Set([0]));
 
-        // Log successful attempt
         if (user) {
           await supabase.from('run_attempts').insert({
             user_id: user.id,
@@ -224,16 +207,14 @@ export default function DashboardPage() {
     const date = new Date(dateString);
     const now = new Date();
     const diffHours = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60));
-    
-    if (diffHours < 24) return `Posted in last 24 hours - high relevance`;
-    if (diffHours < 72) return `Posted in last 3 days`;
-    if (diffHours < 168) return `Posted in last week`;
-    return `Posted in last month`;
+    if (diffHours < 24) return 'Posted in last 24 hours';
+    if (diffHours < 72) return 'Posted in last 3 days';
+    if (diffHours < 168) return 'Posted in last week';
+    return 'Posted in last month';
   };
 
   return (
     <div className="min-h-screen bg-black">
-      {/* Header */}
       <header className="border-b border-gray-800 bg-black/50 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <h1 className="text-xl font-bold bg-gradient-to-r from-cyan-400 via-purple-500 to-pink-500 bg-clip-text text-transparent">
@@ -241,78 +222,60 @@ export default function DashboardPage() {
           </h1>
           <div className="flex items-center gap-4">
             <span className="text-gray-400 text-sm">{user?.email}</span>
-            <button
-              onClick={handleSignOut}
-              className="text-gray-400 hover:text-white text-sm transition-colors"
-            >
+            <button onClick={handleSignOut} className="text-gray-400 hover:text-white text-sm">
               Sign Out
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-4xl mx-auto px-4 py-12">
         <div className="mb-12">
           <h2 className="text-3xl font-bold text-white mb-2">Discover Viral Content</h2>
           <p className="text-gray-400">Enter a theme to find trending posts across platforms</p>
         </div>
 
-        {/* Search Form */}
         <div className="space-y-4 mb-8">
           <div>
-            <label className="block text-sm text-gray-300 mb-2">
-              Theme / Topic <span className="text-red-400">*</span>
-            </label>
+            <label className="block text-sm text-gray-300 mb-2">Theme / Topic *</label>
             <input
               type="text"
               value={theme}
               onChange={(e) => setTheme(e.target.value)}
               placeholder="e.g., AI tools for PMs, startup mistakes, indie hacking..."
-              className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+              className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
               onKeyDown={(e) => e.key === 'Enter' && handleDiscover()}
             />
           </div>
 
           <div>
-            <label className="block text-sm text-gray-300 mb-2">
-              Your LinkedIn URL <span className="text-gray-500">(optional - for personalized results)</span>
-            </label>
+            <label className="block text-sm text-gray-300 mb-2">Your LinkedIn URL (optional)</label>
             <input
               type="url"
               value={linkedinUrl}
               onChange={(e) => setLinkedinUrl(e.target.value)}
               placeholder="https://linkedin.com/in/yourprofile"
-              className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+              className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
             />
           </div>
 
           {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400">
-              {error}
-            </div>
+            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400">{error}</div>
           )}
 
           <button
             onClick={handleDiscover}
             disabled={loading || !theme.trim()}
-            className="w-full py-4 bg-gradient-to-r from-purple-600 via-pink-500 to-cyan-500 text-white font-semibold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            className="w-full py-4 bg-gradient-to-r from-purple-600 via-pink-500 to-cyan-500 text-white font-semibold rounded-xl hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {loading ? (
-              <>
-                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Discovering...
-              </>
+              <span>Discovering...</span>
             ) : (
-              <>
-                Discover Content
-                <span>→</span>
-              </>
+              <span>Discover Content →</span>
             )}
           </button>
         </div>
 
-        {/* Results */}
         {clusters.length > 0 && (
           <div className="space-y-6">
             <p className="text-gray-400">
@@ -323,25 +286,15 @@ export default function DashboardPage() {
               <div key={index} className="bg-gray-900/50 border border-gray-800 rounded-2xl overflow-hidden">
                 <button
                   onClick={() => toggleCluster(index)}
-                  className="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-800/50 transition-colors"
+                  className="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-800/50"
                 >
-                  <div>
+                  <div className="text-left">
                     <h3 className="text-lg font-semibold text-white">{cluster.name}</h3>
                     <p className="text-sm text-gray-400">
-                      Avg virality: {cluster.avg_virality}/100. Top performer on {cluster.top_platform}. Active on: {cluster.active_platforms.join(', ')}
+                      Avg virality: {cluster.avg_virality}/100. Active on: {cluster.active_platforms.join(', ')}
                     </p>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-gray-400">{cluster.posts.length} posts</span>
-                    <svg
-                      className={`w-5 h-5 text-gray-400 transition-transform ${expandedClusters.has(index) ? 'rotate-180' : ''}`}
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                    </svg>
-                  </div>
+                  <span className="text-gray-400">{cluster.posts.length} posts</span>
                 </button>
 
                 {expandedClusters.has(index) && (
@@ -352,7 +305,7 @@ export default function DashboardPage() {
                           <div className="flex-1">
                             <div className="flex items-center gap-2 mb-2">
                               <span className="px-2 py-1 bg-orange-500/20 text-orange-400 text-xs font-medium rounded">
-                                🔸 REDDIT
+                                REDDIT
                               </span>
                               <span className="text-lg font-semibold text-white">{post.title}</span>
                             </div>
@@ -364,10 +317,7 @@ export default function DashboardPage() {
                               <span>💬 {post.metrics.comments}</span>
                               <span>by {post.author}</span>
                             </div>
-                            <div className="mt-2 space-y-1">
-                              <p className="text-xs text-blue-400">• High Reddit engagement: {(post.metrics.upvotes || 0) + (post.metrics.comments || 0)}+ interactions</p>
-                              <p className="text-xs text-green-400">• {getTimeAgo(post.created_at)}</p>
-                            </div>
+                            <p className="text-xs text-green-400 mt-2">{getTimeAgo(post.created_at)}</p>
                             
                               href={post.url}
                               target="_blank"
