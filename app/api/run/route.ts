@@ -1,157 +1,139 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { checkGating, recordRunAttempt } from '@/lib/gating';
-import { runDiscovery, getPlatformStats } from '@/connectors';
-import { RunRequest, RunResponse, PaywallResponse, ErrorResponse } from '@/lib/types';
+import { expandTheme } from '@/lib/theme';
+import { calculateViralityScore, clusterPosts } from '@/lib/virality';
+import { Post } from '@/lib/types';
 
-/**
- * POST /api/run
- * 
- * Main discovery endpoint
- * 
- * Flow:
- * 1. Verify auth
- * 2. Check gating (trial/subscription)
- * 3. Run discovery pipeline
- * 4. Record attempt (only on success)
- * 5. Return results or paywall
- */
-export async function POST(request: NextRequest) {
+async function fetchRedditPosts(query: string): Promise<Post[]> {
+  const posts: Post[] = [];
+  
   try {
-    // Parse request body
-    const body: RunRequest = await request.json();
+    // Use old.reddit.com which is less likely to block
+    const url = `https://old.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&t=month&limit=25`;
     
-    if (!body.theme || typeof body.theme !== 'string') {
-      return NextResponse.json<ErrorResponse>(
-        {
-          success: false,
-          code: 'INVALID_REQUEST',
-          message: 'Theme is required',
-        },
-        { status: 400 }
-      );
-    }
+    console.log('[Reddit] Fetching:', url);
     
-    const theme = body.theme.trim();
-    
-    if (theme.length < 2 || theme.length > 200) {
-      return NextResponse.json<ErrorResponse>(
-        {
-          success: false,
-          code: 'INVALID_REQUEST',
-          message: 'Theme must be between 2 and 200 characters',
-        },
-        { status: 400 }
-      );
-    }
-    
-    // Get authenticated user
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (authError || !user) {
-      return NextResponse.json<ErrorResponse>(
-        {
-          success: false,
-          code: 'AUTH_REQUIRED',
-          message: 'Please sign in to continue',
-        },
-        { status: 401 }
-      );
-    }
-    
-    // Update LinkedIn URL if provided
-    if (body.linkedin_url) {
-      await supabase
-        .from('profiles')
-        .update({ linkedin_url: body.linkedin_url })
-        .eq('id', user.id);
-    }
-    
-    // Check gating (trial limits)
-    const gating = await checkGating(supabase, user.id);
-    
-    if (!gating.allowed) {
-      // User has exceeded free tier - return paywall
-      // For MVP: we're skipping paywall enforcement, but structure is ready
-      // TODO: Uncomment when enabling paywall
-      /*
-      return NextResponse.json<PaywallResponse>(
-        {
-          success: false,
-          code: 'PAYWALL_REQUIRED',
-          teaser: {
-            title: 'Your content ideas are waiting...',
-            why: 'Upgrade to unlock unlimited discovery runs',
-            score: 85,
-          },
-          remaining_free_runs: 0,
-        },
-        { status: 402 }
-      );
-      */
-    }
-    
-    // Run discovery pipeline
-    console.log(`[RUN] Starting discovery for theme: "${theme}" (user: ${user.id})`);
-    const startTime = Date.now();
-    
-    const result = await runDiscovery(theme);
-    
-    const duration = Date.now() - startTime;
-    console.log(`[RUN] Discovery completed in ${duration}ms - ${result.total_posts} posts found`);
-    
-    // Check if discovery succeeded
-    if (!result.success || result.total_posts === 0) {
-      // Discovery failed - do NOT burn attempt
-      console.log(`[RUN] Discovery failed - not counting as attempt`);
-      
-      // Optionally record failure for analytics
-      await recordRunAttempt(supabase, user.id, theme, 'failure');
-      
-      return NextResponse.json<ErrorResponse>(
-        {
-          success: false,
-          code: 'DISCOVERY_FAILED',
-          message: 'Unable to find content for this theme. Try a different topic or check back later.',
-        },
-        { status: 500 }
-      );
-    }
-    
-    // Success! Record the attempt
-    await recordRunAttempt(supabase, user.id, theme, 'success');
-    
-    // Calculate remaining runs
-    const newGating = await checkGating(supabase, user.id);
-    
-    // Log platform stats
-    const platformStats = getPlatformStats(result.platform_results);
-    console.log(`[RUN] Platform stats:`, platformStats);
-    
-    // Return results
-    return NextResponse.json<RunResponse>({
-      success: true,
-      clusters: result.clusters,
-      total_posts: result.total_posts,
-      remaining_free_runs: newGating.remaining_runs,
-    });
-    
-  } catch (error) {
-    console.error('[RUN] Unexpected error:', error);
-    
-    return NextResponse.json<ErrorResponse>(
-      {
-        success: false,
-        code: 'DISCOVERY_FAILED',
-        message: 'An unexpected error occurred. Please try again.',
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
       },
-      { status: 500 }
-    );
+    });
+
+    console.log('[Reddit] Response status:', response.status);
+
+    if (!response.ok) {
+      console.error('[Reddit] Failed:', response.status, response.statusText);
+      return posts;
+    }
+
+    const data = await response.json();
+    const children = data?.data?.children || [];
+    
+    console.log('[Reddit] Found children:', children.length);
+
+    for (const child of children) {
+      const post = child.data;
+      if ((post.ups || 0) < 5) continue;
+
+      posts.push({
+        platform: 'reddit',
+        url: `https://reddit.com${post.permalink}`,
+        author: post.author,
+        title: post.title,
+        text: post.selftext?.slice(0, 500),
+        created_at: new Date(post.created_utc * 1000).toISOString(),
+        metrics: {
+          upvotes: post.ups,
+          comments: post.num_comments,
+        },
+      });
+    }
+  } catch (error) {
+    console.error('[Reddit] Error:', error);
   }
+
+  return posts;
 }
 
-// Health check
-export async function GET() {
-  return NextResponse.json({ status: 'ok', endpoint: '/api/run' });
+export async function POST(request: NextRequest) {
+  try {
+    const { theme, linkedinUrl } = await request.json();
+    console.log('[API] Theme:', theme);
+
+    if (!theme) {
+      return NextResponse.json({ error: 'Theme is required' }, { status: 400 });
+    }
+
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (user && linkedinUrl) {
+      await supabase
+        .from('profiles')
+        .upsert({ id: user.id, email: user.email, linkedin_url: linkedinUrl });
+    }
+
+    const expansion = expandTheme(theme);
+    
+    // Fetch Reddit posts
+    let allPosts: Post[] = [];
+    
+    // Try multiple queries
+    const queries = [theme, `${theme} 2024`, `${theme} tips`];
+    
+    for (const query of queries) {
+      console.log('[API] Trying query:', query);
+      const posts = await fetchRedditPosts(query);
+      console.log('[API] Got posts:', posts.length);
+      allPosts = [...allPosts, ...posts];
+      
+      if (allPosts.length >= 10) break;
+    }
+
+    // Remove duplicates
+    const seenUrls = new Set<string>();
+    allPosts = allPosts.filter(post => {
+      if (seenUrls.has(post.url)) return false;
+      seenUrls.add(post.url);
+      return true;
+    });
+
+    console.log('[API] Total unique posts:', allPosts.length);
+
+    if (allPosts.length === 0) {
+      if (user) {
+        await supabase.from('run_attempts').insert({
+          user_id: user.id,
+          theme,
+          status: 'failure',
+        });
+      }
+
+      return NextResponse.json({
+        error: 'Unable to find content for this theme. Try a different topic.'
+      }, { status: 404 });
+    }
+
+    const scoredPosts = allPosts.map(post => ({
+      ...post,
+      virality_score: calculateViralityScore(post),
+    }));
+
+    const clusters = clusterPosts(scoredPosts, expansion.clusters);
+
+    if (user) {
+      await supabase.from('run_attempts').insert({
+        user_id: user.id,
+        theme,
+        status: 'success',
+      });
+    }
+
+    return NextResponse.json({ clusters, theme: expansion });
+  } catch (error) {
+    console.error('[API] Error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
 }
