@@ -1,21 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { expandTheme } from '@/lib/theme';
-import { calculateViralityScore, clusterPosts } from '@/lib/virality';
 import { Post } from '@/lib/types';
+
+function calculateViralityScore(post: Post): number {
+  const upvotes = post.metrics?.upvotes || 0;
+  const comments = post.metrics?.comments || 0;
+  const total = upvotes + comments * 2;
+  
+  if (total > 10000) return Math.min(95, 70 + Math.log10(total) * 5);
+  if (total > 1000) return Math.min(70, 50 + Math.log10(total) * 5);
+  if (total > 100) return Math.min(50, 30 + Math.log10(total) * 5);
+  return Math.min(30, 10 + Math.log10(total + 1) * 5);
+}
 
 async function fetchRedditPosts(query: string): Promise<Post[]> {
   const posts: Post[] = [];
   
   try {
-    // Use old.reddit.com which is less likely to block
     const url = `https://old.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&t=month&limit=25`;
     
     console.log('[Reddit] Fetching:', url);
     
     const response = await fetch(url, {
       headers: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
       },
@@ -24,7 +33,7 @@ async function fetchRedditPosts(query: string): Promise<Post[]> {
     console.log('[Reddit] Response status:', response.status);
 
     if (!response.ok) {
-      console.error('[Reddit] Failed:', response.status, response.statusText);
+      console.error('[Reddit] Failed:', response.status);
       return posts;
     }
 
@@ -77,10 +86,7 @@ export async function POST(request: NextRequest) {
 
     const expansion = expandTheme(theme);
     
-    // Fetch Reddit posts
     let allPosts: Post[] = [];
-    
-    // Try multiple queries
     const queries = [theme, `${theme} 2024`, `${theme} tips`];
     
     for (const query of queries) {
@@ -121,7 +127,14 @@ export async function POST(request: NextRequest) {
       virality_score: calculateViralityScore(post),
     }));
 
-    const clusters = clusterPosts(scoredPosts, expansion.clusters);
+    // Simple clustering by theme
+    const clusters = [{
+      name: `${theme} Insights`,
+      avg_virality: Math.round(scoredPosts.reduce((a, p) => a + p.virality_score, 0) / scoredPosts.length),
+      top_platform: 'reddit',
+      active_platforms: ['reddit'],
+      posts: scoredPosts.slice(0, 10),
+    }];
 
     if (user) {
       await supabase.from('run_attempts').insert({
