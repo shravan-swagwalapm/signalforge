@@ -38,7 +38,7 @@ async function fetchHackerNews(query: string): Promise<Post[]> {
   const posts: Post[] = [];
   try {
     const response = await fetch(
-      'https://hn.algolia.com/api/v1/search?query=' + encodeURIComponent(query) + '&tags=story&hitsPerPage=25'
+      'https://hn.algolia.com/api/v1/search_by_date?query=' + encodeURIComponent(query) + '&tags=story&hitsPerPage=25'
     );
     if (!response.ok) return posts;
     const data = await response.json();
