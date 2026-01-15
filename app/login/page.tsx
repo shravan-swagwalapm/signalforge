@@ -11,11 +11,21 @@ export default function LoginPage() {
   const router = useRouter();
 
   useEffect(() => {
+    // Handle auth state change (for implicit flow)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        router.push('/dashboard');
+      }
+    });
+
+    // Check if already logged in
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) {
         router.push('/dashboard');
       }
     });
+
+    return () => subscription.unsubscribe();
   }, [supabase.auth, router]);
 
   const handleGoogleLogin = async () => {
@@ -25,7 +35,7 @@ export default function LoginPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/api/auth/callback`,
+        redirectTo: `${window.location.origin}/dashboard`,
       },
     });
 
